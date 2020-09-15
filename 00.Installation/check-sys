@@ -3,8 +3,8 @@
 # https://github.com/Aniverse/inexistence
 # Author: Aniverse
 #
-# script_update=2020.07.15
-# script_version=r12023
+# script_update=2020.09.08
+# script_version=r12030
 # This var will recover other script's var when source
 ################################################################################################ Usage Guide
 
@@ -30,10 +30,27 @@ get_opsy() {
     [ -f /etc/lsb-release    ] && awk -F'[="]+' '/DESCRIPTION/{print $2}'       /etc/lsb-release    && return
 }
 
-lbit=$(getconf LONG_BIT 2>&1)
+has_cmd() {
+    local cmd="$1"
+    if  eval type type > /dev/null 2>&1; then
+        eval type "$cmd" > /dev/null 2>&1
+    elif command > /dev/null 2>&1; then
+         command -v "$cmd" > /dev/null 2>&1
+    else
+        which "$cmd" > /dev/null 2>&1
+    fi
+    local rt=$?
+    return ${rt}
+}
+
 running_kernel=$(uname -r 2>&1)
 arch=$(uname -m 2>&1)
-[ -z $arch ] && arch=$(echo "x$(getconf LONG_BIT)")
+if  has_cmd "getconf" ; then
+    lbit=$( getconf LONG_BIT )
+else
+    echo ${arch} | grep -q "64" && lbit="64" || lbit="32"
+fi
+[[ -z $arch ]] && arch=$(echo "x$(getconf LONG_BIT)")
 
 DISTRO=$(awk -F'[= "]' '/PRETTY_NAME/{print $3}' /etc/os-release)
 DISTROL=$(echo $DISTRO | tr 'A-Z' 'a-z')
@@ -43,7 +60,7 @@ DISTROL=$(echo $DISTRO | tr 'A-Z' 'a-z')
 [[ ! $DISTRO =~ (Ubuntu|Debian) ]] && DISTRO=$(get_opsy)
 
 check_pm() {
-    if  type dnf      >/dev/null 2>&1; then  # Fedora, CentOS 8
+    if   type dnf     >/dev/null 2>&1; then  # Fedora, CentOS 8
         pm=dnf
     elif type yum     >/dev/null 2>&1; then  # CentOS
         pm=yum
@@ -115,6 +132,7 @@ hardware_check_1() {
     disk_size2=($( LANG=C df -hPl | grep -wvE '\-|none|tmpfs|devtmpfs|by-uuid|chroot|Filesystem' | awk '{print $3}' ))
     disk_total_size=$( calc_disk "${disk_size1[@]}" )
     disk_used_size=$( calc_disk "${disk_size2[@]}" )
+    TOTAL_DISK=$(df -t simfs -t ext2 -t ext3 -t ext4 -t btrfs -t xfs -t vfat -t ntfs -t swap --total -h | grep total | awk '{ print $2 }')
 
     # If SSD
     cat /sys/block/sd*/queue/rotational 2>/dev/null | grep -q 0 && SSD=yes
@@ -133,8 +151,14 @@ hardware_check_1() {
     processes=`ps aux | wc -l`
     uptime1=$( awk '{a=$1/86400;b=($1%86400)/3600;c=($1%3600)/60} {printf("%d days %d hour %d min\n",a,b,c)}' /proc/uptime )
     uptime2=`uptime | grep -ohe 'up .*' | sed 's/,/\ hours/g' | awk '{ printf $2" "$3 }'`
-    load=$( w | head -1 | awk -F'load average:' '{print $2}' | sed 's/^[ \t]*//;s/[ \t]*$//' )
+    if has_cmd "w"; then
+        load=$( w | head -1 | awk -F'load average:' '{print $2}' | sed 's/^[ \t]*//;s/[ \t]*$//' )
+    elif has_cmd "uptime"; then
+        load=$( uptime | head -1 | awk -F'load average:' '{print $2}' | sed 's/^[ \t]*//;s/[ \t]*$//' )
+    fi
 }
+
+
 
 
 check_tcp_acc() {
@@ -457,7 +481,7 @@ function pm_action(){
 # Virt-what
 check_virt() {
     local virtualx=$(dmesg 2>&1)
-    local arch=$(uname -p)
+    local uname_p=$(uname -p 2>&1)
     local dmi=$(LANG=C dmidecode 2>&1)
 
     if  [ $(which dmidecode) ]; then
@@ -526,7 +550,7 @@ check_virt() {
         virtual="No Virtualization Detected"
     fi
 
-    if [ "$arch" = "ia64" ]; then
+    if [ "$uname_p" = "ia64" ]; then
         if [ -d "/sys/bus/xen" -a ! -d "/sys/bus/xen-backend" ]; then
            virtual="Xen-HVM"
         fi
@@ -594,7 +618,30 @@ ip_ipapi() {
     [[ $cityyyy == Singapore ]] && unset cityyyy
     [[ -z $isppppp ]] && isp="No ISP detected"
     [[ -z $asnnnnn ]] && isp="No ASN detected"
-    rm -f $HOME/.abench/ipapi 2>&1
+}
+
+ip_ipinfo_aniverse() {
+    mkdir -p $HOME/.abench
+    wget -t1 -T6 -qO- ipinfo.io > $HOME/.abench/ipinfo 2>&1
+    asnnnnn="$(cat $HOME/.abench/ipinfo | grep \"org\"      | awk -F '"' '{print $4}')"
+    cityyyy="$(cat $HOME/.abench/ipinfo | grep \"city\"     | awk -F '"' '{print $4}')"
+    country="$(cat $HOME/.abench/ipinfo | grep \"country\"  | awk -F '"' '{print $4}')"
+    regionn="$(cat $HOME/.abench/ipinfo | grep \"region\"   | awk -F '"' '{print $4}')"
+    [[ $cityyyy == Singapore ]] && unset cityyyy
+    [[ -z $asnnnnn ]] && isp="No ASN detected"
+}
+
+# bench.sh
+# wget -q -T10 -O- ipinfo.io
+# wget -q -T10 -O- ipinfo.io/5.9.5.5/org
+ip_ipinfo() {
+    local org="$(wget -q -T10 -O- ipinfo.io/org)"
+    local city="$(wget -q -T10 -O- ipinfo.io/city)"
+    local country="$(wget -q -T10 -O- ipinfo.io/country)"
+    local region="$(wget -q -T10 -O- ipinfo.io/region)"
+    [[ -n "$org" ]] && echo " Organization          : $(echo "$org")"
+    [[ -n "$city" && -n "$country" ]] && echo " Location              : $(echo "$city / $country")"
+    [[ -n "$region" ]] && echo " Region                : $(echo "$region")"
 }
 
 
@@ -667,6 +714,89 @@ seedbox_check() {
 }
 
 
+################################################################################################
+################################################################################################ IO Test
+################################################################################################
+
+
+
+# https://github.com/n-st/nench
+Bps_to_MiBps()   { awk '{ printf "%.2f MiB/s\n", $0 / 1024 / 1024 } END { if (NR == 0) { print "error" } }' ; }
+Bps_to_MBps()    { awk '{ printf "%.0f MB/s\n", $0 / 1000 / 1000  } END { if (NR == 0) { print "error" } }' ; }
+Bps_to_MBps_1f() { awk '{ printf "%.1f MB/s\n", $0 / 1000 / 1000  } END { if (NR == 0) { print "error" } }' ; }
+dd_benchmark()   {
+    LC_ALL=C dd if=/dev/zero of=test_$$ bs=64k count=16k conv=fdatasync 2>&1 | awk -F, '
+        { io=$NF ; }
+        END { if (io ~ /TB\/s/) {printf("%.0f\n", 1000*1000*1000*1000*io)}
+        else if (io ~ /GB\/s/) {printf("%.0f\n", 1000*1000*1000*io)}
+        else if (io ~ /MB\/s/) {printf("%.0f\n", 1000*1000*io)}
+        else if (io ~ /KB\/s/) {printf("%.0f\n", 1000*io)}
+        else { printf("%.0f", 1*io)} ; }'
+    rm -f test_$$
+}
+
+
+
+################################################################################################
+################################################################################################ Network test
+################################################################################################
+# https://install.speedtest.net/ooklaserver/ooklaserver.sh
+
+
+
+# These codes are from bench.sh
+################################################################################################
+
+# https://www.speedtest.net/apps/cli
+install_speedtest_cli_offical() {
+    if  ! has_cmd speedtest ; then
+        wget --no-check-certificate -T10 -qO speedtest.tgz https://cdn.jsdelivr.net/gh/oooldking/script@1.1.7/speedtest_cli/ookla-speedtest-1.0.0-$(uname -m)-linux.tgz
+        [ $? -ne 0 ] && echo -e "Error: Failed to download speedtest cli.\n" && exit 1
+        if [[ $EUID == 0 ]]; then
+            speedtest_cmd=/usr/local/bin/speedtest
+        else
+            speedtest_cmd=$HOME/.abench/bin/speedtest
+            mkdir -p $HOME/.abench/bin $HOME/.abench/speedtest
+            echo $PATH | grep -q $HOME/.abench/bin || export PATH=$HOME/.abench/bin:$PATH
+        fi
+        mkdir -p speedtest-cli && tar zxf speedtest.tgz -C ./speedtest-cli && chmod +x ./speedtest-cli/speedtest
+        cp -f ./speedtest-cli/speedtest $speedtest_cmd
+        rm -f speedtest.tgz ./speedtest-cli
+    fi
+}
+
+speedtest_offical_cli_teddysun() {
+    mkdir -p $HOME/.abench/speedtest
+    local nodeName="$2"
+    [ -z "$1" ] && speedtest --progress=no --accept-license --accept-gdpr > $HOME/.abench/speedtest/speedtest.log 2>&1 || \
+    speedtest --progress=no --server-id=$1 --accept-license --accept-gdpr > $HOME/.abench/speedtest/speedtest.log 2>&1
+    if [ $? -eq 0 ]; then
+        local dl_speed=$(awk '/Download/{print $3" "$4}' $HOME/.abench/speedtest/speedtest.log)
+        local up_speed=$(awk '/Upload/{print   $3" "$4}' $HOME/.abench/speedtest/speedtest.log)
+        local  latency=$(awk '/Latency/{prin t $2" "$3}' $HOME/.abench/speedtest/speedtest.log)
+        if [[ -n "${dl_speed}" && -n "${up_speed}" && -n "${latency}" ]]; then
+            printf "\033[0;33m%-18s\033[0;32m%-18s\033[0;31m%-20s\033[0;36m%-12s\033[0m\n" " ${nodeName}" "${up_speed}" "${dl_speed}" "${latency}"
+        fi
+    fi
+}
+
+speedtest_teddysun() {
+    printf "%-18s%-18s%-20s%-12s\n" " Node Name" "Upload Speed" "Download Speed" "Latency"
+    speedtest_offical_cli_teddysun ''      'Speedtest.net'
+    speedtest_offical_cli_teddysun '5145'  'Beijing    CU'
+    speedtest_offical_cli_teddysun '3633'  'Shanghai   CT'
+    speedtest_offical_cli_teddysun '24447' 'Shanghai   CU'
+    speedtest_offical_cli_teddysun '27594' 'Guangzhou  CT'
+    speedtest_offical_cli_teddysun '26678' 'Guangzhou  CU'
+    speedtest_offical_cli_teddysun '16192' 'Shenzhen   CU'
+    speedtest_offical_cli_teddysun '4515'  'Shenzhen   CM'
+    speedtest_offical_cli_teddysun '32155' 'Hongkong   CN'
+    speedtest_offical_cli_teddysun '13623' 'Singapore  SG'
+    speedtest_offical_cli_teddysun '15047' 'Tokyo      JP'
+}
+
+# install_speedtest_cli_offical && speedtest_teddysun && rm -fr speedtest-cli
+################################################################################################
 
 ################################################################################################
 ################################################################################################ Disk check
@@ -674,61 +804,97 @@ seedbox_check() {
 
 
 
+function get_app_static () {
+    local app=$1
+    if [[ ! $app =~ (smartctl|ioping|iperf3|fio) ]]; then
+        echo -e "ERROR: Only smartctl / ioping / iperf3 / fio is supported"
+    fi
+    arch=$(uname -m 2>&1)
+    if [[ $arch == x86_64 ]]; then
+        if [[ $EUID == 0 ]]; then
+            app_cmd=/usr/local/bin/$app
+        else
+            app_cmd=$HOME/.abench/bin/$app
+            mkdir -p $HOME/.abench/bin
+            echo $PATH | grep -q $HOME/.abench/bin || export PATH=$HOME/.abench/bin:$PATH
+        fi
+        if   [[ $app == smartctl ]] && [[ ! -x $app_cmd ]]; then
+            echo -e "Installing $app static builds to $app_cmd ..."
+            wget https://github.com/Aniverse/inexistence-files/raw/master/binary/amd64/$app -qO $app_cmd
+            chmod 755 $app_cmd
+        elif [[ $app != smartctl ]] && [[ -z $(which $app) ]]; then
+            echo -e "Installing $app static builds to $app_cmd ..."
+            wget https://github.com/Aniverse/inexistence-files/raw/master/binary/amd64/$app -qO $app_cmd
+            chmod 755 $app_cmd
+        fi
+    else
+        echo -e "ERROR: Only amd64 architecture is supported when using static builds"
+    fi
+}
+
+function grep_power_on_hours () {
+    while read line ; do echo "$line" | grep Power_On_Hours | awk '{if (index($10, "h") > 0) {print substr($10, 1, index($10, "h") -1)} else print $10}' ; done
+}
+
+function grep_disk_model () {
+    while read line ; do echo "$line" | grep "Device Model" | sed "s/Device Model[:]\?//" | awk '{print $1,$2,$3,$4}' ; done
+}
+
+function write_disk_info () {
+    echo "$num text $power_on_hours $model" >> $HOME/.abench/disk.info
+}
+
 # Origin code from https://github.com/dave-pl/hwcheck
 function disk_check_smart () {
     case "$raidcard" in
         NoRaid      )   disk=$(fdisk -l 2>/dev/null| grep -i dev |egrep -v "(/dev/[brm])"| awk '/:/ {print $2}'| cut -f 1 -d ":") ; d=0
                         for i in $disk; do
-                            if [[ $( smartctl -a $i | grep Power_On_Hours | awk '{print $NF}') ]]; then
+                            if [[ $( smartctl -a $i | grep_power_on_hours) ]]; then
                                 num="disk-$(expr $d + 1)"
-                                power_on_hours=$(smartctl -a $i | grep Power_On_Hours | awk '{print $NF}')
+                                power_on_hours=$(smartctl -a $i | grep_power_on_hours)
                                 model=$(smartctl -a $i | grep "Device Model"| grep -vi qemu | sed "s/Device Model[:]\?//" | awk '{print $1,$2,$3,$4}')
-                                echo "$num text $power_on_hours $model" >> $HOME/.abench/disk.info
+                                write_disk_info
                             fi
                         done
                         ;;
         MegaRAID    )   for i in `seq 0 99` ; do
-                            if [[ $( smartctl -a -d megaraid,$i /dev/sg0 | grep Power_On_Hours ) ]]; then
+                            if [[ $( smartctl -a -d megaraid,$i /dev/sg0 | grep_power_on_hours ) ]]; then
                                 num="disk-$(expr $i + 1)"
-                                power_on_hours=$(smartctl -a -d megaraid,$i /dev/sg0 | grep Power_On_Hours | awk '{print $NF}')
-                                model=$(smartctl -a -d megaraid,$i /dev/sg0 | grep "Device Model" | sed "s/Device Model[:]\?//" | awk '{print $1,$2,$3,$4}')
-                                echo "$num text $power_on_hours $model" >> $HOME/.abench/disk.info
+                                power_on_hours=$(smartctl -a -d megaraid,$i /dev/sg0 | grep_power_on_hours)
+                                model=$(smartctl -a -d megaraid,$i /dev/sg0 | grep_disk_model)
+                                write_disk_info
                             fi
                          done
                         ;;
         HP-RAID     )   for i in `seq 0 99` ; do
-                            if [[ $( smartctl -a -d cciss,$i /dev/sg0 | grep Power_On_Hours ) ]]; then
+                            if [[ $( smartctl -a -d cciss,$i /dev/sg0 | grep_power_on_hours ) ]]; then
                                 num="disk-$(expr $i + 1)"
-                                power_on_hours=$(smartctl -a -d cciss,$i /dev/sg0 | grep Power_On_Hours | awk '{print $NF}')
-                                model=$(smartctl -a -d cciss,$i /dev/sg0 | grep "Device Model" | sed "s/Device Model[:]\?//" | awk '{print $1,$2,$3,$4}')
-                                echo "$num text $power_on_hours $model" >> $HOME/.abench/disk.info
+                                power_on_hours=$(smartctl -a -d cciss,$i /dev/sg0 | grep_power_on_hours)
+                                model=$(smartctl -a -d cciss,$i /dev/sg0 | grep_disk_model)
+                                write_disk_info
                             fi
                         done
                         ;;
-        SCSI        )   for i in `seq 0 99` ; do
-                            if [[ $( smartctl -a /dev/sg$i | grep Power_On_Hours ) ]]; then
+        SCSI|Adaptec)   for i in `seq 0 99` ; do
+                            if [[ $( smartctl -a /dev/sg$i | grep_power_on_hours ) ]]; then
                                 num="disk-$(expr $i + 1)"
-                                power_on_hours=$(smartctl -a /dev/sg$i | grep Power_On_Hours | awk '{print $NF}')
-                                model=$(smartctl -a /dev/sg$i | grep "Device Model" | sed "s/Device Model[:]\?//" | awk '{print $1,$2,$3,$4}')
-                                echo "$num text $power_on_hours $model" >> $HOME/.abench/disk.info
+                                power_on_hours=$(smartctl -a /dev/sg$i | grep_power_on_hours)
+                                model=$(smartctl -a /dev/sg$i | grep_disk_model)
+                                write_disk_info
                             fi
                       done
                         ;;
         NVMe        )   for i in `seq 0 99` ; do
-                            if [[ $( nvme smart-log /dev/nvme$i 2>&1 | grep power_on_hours ) ]]; then
+                            if [[ $( smartctl -a /dev/nvme$i 2>&1 | grep -i "Power.On.Hours" | awk '{print $NF}' | sed "s|,||" ) ]]; then
                                 num="disk-$(expr $i + 1)"
-                                power_on_hours=$(nvme smart-log /dev/nvme$i | grep power_on_hours | grep -oE "[0-9,]+" | sed "s/,//")
-                                model=$(nvme id-ctrl /dev/nvme$i | grep -w mn | awk -F':' '{print $2,$3,$4}' | sed 's/^ //')
-                                echo "$num text $power_on_hours $model" >> $HOME/.abench/disk.info
-                            fi
-                        done
-                        ;;
-        Adaptec     )   for i in `seq 0 99` ; do
-                            if [[ $( smartctl -a /dev/sg$i | grep Power_On_Hours ) ]]; then
-                                num="disk-$(expr $i + 1)"
-                                power_on_hours=$(smartctl -a /dev/sg$i | grep Power_On_Hours | awk '{print $NF}')
-                                model=$(smartctl -a /dev/sg$i | grep "Device Model" | sed "s/Device Model[:]\?//" | awk '{print $1,$2,$3,$4}')
-                                echo "$num text $power_on_hours $model" >> $HOME/.abench/disk.info
+                                power_on_hours=$(smartctl -a /dev/nvme$i 2>&1 | grep -i "Power.On.Hours" | awk '{print $NF}' | sed "s|,||")
+                                model=$(smartctl -a /dev/nvme$i | grep -i Model | sed "s/Model.*://" | awk '{print $1,$2,$3,$4}')
+                                write_disk_info
+                        #   if [[ $( nvme smart-log /dev/nvme$i 2>&1 | grep power_on_hours ) ]]; then
+                        #       num="disk-$(expr $i + 1)"
+                        #       power_on_hours=$(nvme smart-log /dev/nvme$i | grep power_on_hours | grep -oE "[0-9,]+" | sed "s/,//")
+                        #       model=$(nvme id-ctrl /dev/nvme$i | grep -w mn | awk -F':' '{print $2,$3,$4}' | sed 's/^ //')
+                        #       write_disk_info
                             fi
                         done
                         ;;
@@ -810,6 +976,8 @@ function disk_check_no_root () {
 ################################################################################################ deprecated
 ################################################################################################
 
+
+
 check_release() {
     if [ -f /etc/redhat-release ]; then
         release="centos"
@@ -831,6 +999,68 @@ check_release() {
         release="slackware"
     fi
 }
+
+deprecated_disk_check() {
+    # 其实这个判定对于独服可能不太对
+    # disk_par_num=$(df -lh | grep -P "/home[0-9]+|media|home|mnt" | wc -l)
+    disk_par_num=$(cat $HOME/par_list | wc -l)
+    # 这个估计没毛病，Docker、独服、KVM 下都没问题的样子，别的不知道
+    # disk_par_num=$(lsblk --nodeps --noheadings --output NAME,SIZE,ROTA --exclude 1,2,11 2>&1 | wc -l)
+
+    # / 为最大分区时，数字 +1
+    [[ $(df -lh | grep $(df -k | sort -rn -k4 | awk '{print $1}' | head -1) | awk '{print $NF}') == / ]] && disk_par_num=$(expr $disk_par_num + 1)
+
+    # lsblk --exclude 1,2,11 --output NAME,SIZE,ROTA,TYPE,MOUNTPOINT,MODEL
+    # lsblk -dno MODEL 2>&1 | sort | uniq -c | sort -nr              | awk '{printf("共 %-2s 块 %s %s %s %s\n", $1, $2, $3, $4, $5)}'
+    # lsblk -dno MODEL 2>&1 | sort -u
+    # lsblk --nodeps --exclude 1,2,11 --output NAME,SIZE,ROTA,MODEL | awk '{if ($3 == 0) {$3=" SSD"} if ($3 == 1) {$3=" HDD"} ; printf("%-5s%7s%5s   %s %s %s %s\n", $1, $2, $3, $4, $5, $6, $7)}' | sed "s|ROTA|TYPE|" | awk 'NR==1 {print $0};NR!=1 {print $0 | "sort -n -k2"}'
+
+    # disk_size=$(lsblk --nodeps --noheadings --output SIZE 2>&1 | awk '{print $1}')
+    # disk_total_size=$( calc_disk ${disk_size[@]} )
+    # disk_used_size=$( du -sh $HOME 2>&1 | awk -F " " '{print $1}' | sed "s/G//" )
+
+    # 2020.02.28 lsblk／fdisk -l 计算硬盘空间的好处是，一些没格式化或者没挂载的硬盘也能算出来，但是还是容易出错
+    # 下边这个是各类 bench 脚本通用的，还是用这个算了，起码算错了也没什么大不了的，因为大家都错了……
+
+    # superbench
+    # disk_size1=($( LANG=C df -hPl | grep -wvE '\-|none|tmpfs|overlay|shm|udev|devtmpfs|by-uuid|chroot|Filesystem' | awk '{print $2}' ))
+    # bench.sh
+    # disk_size1=($( LANG=C df -hPl | grep -wvE '\-|none|tmpfs|devtmpfs|by-uuid|chroot|Filesystem|udev|docker' | awk '{print $2}' ))
+
+    # nvme list | grep /dev/nvme$i | sed "s/\b \b/_/g" | awk '{print $3}' | sed "s/_/ /g"
+    # udevadm info --name=/dev/nvme${i}n1 | grep "disk/by-id/nvme-" | head -1 | sed "s|S: disk/by-id/nvme-||" | awk -F '_' '{print $1,$2}'
+    # nvme_model=$(nvme list | grep /dev/nvme$i | sed "s/\b \b/_/g" | awk '{print $3}' | sed "s/_/ /g")
+    # nvme_model="$(smartctl -a /dev/nvme${i}n1 | grep "Model Number:" | cut -d ":" -f 2 | sed -e 's/^[ \t]*//')"
+}
+
+deprecated_interface_check() {
+    # LotServer
+    [ -n "$(grep 'eth0:' /proc/net/dev)" ] && wangka=eth0 || wangka=`cat /proc/net/dev |awk -F: 'function trim(str){sub(/^[ \t]*/,"",str); sub(/[ \t]*$/,"",str); return str } NR>2 {print trim($1)}'  |grep -Ev '^lo|^sit|^stf|^gif|^dummy|^vmnet|^vir|^gre|^ipip|^ppp|^bond|^tun|^tap|^ip6gre|^ip6tnl|^teql|^venet|^veth|^he-ipv6|^docker' |awk 'NR==1 {print $0}'`
+
+    # swizzin
+    wangka1=$(ip link show 2>&1 | grep -i broadcast | grep -m1 UP   | cut -d: -f 2 | cut -d@ -f 1 | sed 's/ //g')
+    wangka2=$(ip link show 2>&1 | grep -i broadcast | grep -e MASTER| cut -d: -f 2 | cut -d@ -f 1 | sed 's/ //g')
+    interface=${wangka1[0]} ; [[ -n $wangka2 ]] && interface=$wangka2
+}
+
+disk_check_dn_ver() {
+    disknumber=1
+    diskname=$(lsblk -p | grep disk | sed -n "$disknumber"p | awk '{print $1}')
+    echo -n '' > /tmp/diskinfo
+    while [[ $diskname != "" ]]; do
+        echo $diskname >> /tmp/diskinfo
+        ((disknumber = disknumber + 1))
+        diskname=$(lsblk -p | grep disk | sed -n "$disknumber"p | awk '{print $1}')
+    done
+    ((disknumber = disknumber - 1))
+    echo "一共 $disknumber 块硬盘"
+    cat /tmp/diskinfo
+    rm -f /tmp/diskinfo
+}
+
+################################################################################################
+################################################################################################ deprecated - check ip info
+################################################################################################
 
 # This function doesn't work anymore
 ip_ipip() {
@@ -866,47 +1096,101 @@ ip_mix() {
     asn=$(wget --no-check-certificate -t1 -T10 -qO- https://ipapi.co/asn/)
 }
 
+superbench_ip_info1() {
+    # use jq tool
+    result=$(curl -s 'http://ip-api.com/json')
+    country=$(echo $result | jq '.country' | sed 's/\"//g')
+    city=$(echo $result | jq '.city' | sed 's/\"//g')
+    isp=$(echo $result | jq '.isp' | sed 's/\"//g')
+    as_tmp=$(echo $result | jq '.as' | sed 's/\"//g')
+    asn=$(echo $as_tmp | awk -F ' ' '{print $1}')
+    org=$(echo $result | jq '.org' | sed 's/\"//g')
+    countryCode=$(echo $result | jq '.countryCode' | sed 's/\"//g')
+    region=$(echo $result | jq '.regionName' | sed 's/\"//g')
+    if [ -n "$city" ]; then
+        city=${region}
+    fi
 
-deprecated_disk_check() {
-    # 其实这个判定对于独服可能不太对
-    # disk_par_num=$(df -lh | grep -P "/home[0-9]+|media|home|mnt" | wc -l)
-    disk_par_num=$(cat $HOME/par_list | wc -l)
-    # 这个估计没毛病，Docker、独服、KVM 下都没问题的样子，别的不知道
-    # disk_par_num=$(lsblk --nodeps --noheadings --output NAME,SIZE,ROTA --exclude 1,2,11 2>&1 | wc -l)
-    
-    # / 为最大分区时，数字 +1
-    [[ $(df -lh | grep $(df -k | sort -rn -k4 | awk '{print $1}' | head -1) | awk '{print $NF}') == / ]] && disk_par_num=$(expr $disk_par_num + 1)
-    
-    # lsblk --nodeps --exclude 1,2,11 --output NAME,SIZE,ROTA,MODEL | awk '{if ($3 == 0) {$3="SSD"} if ($3 == 1) {$3="HDD"} ; printf("%-5s%7s%5s   %-10s%-15s\n", $1, $2, $3, $4, $5)}' 2>&1
-    # lsblk --exclude 1,2,11 --output NAME,SIZE,ROTA,TYPE,MOUNTPOINT,MODEL
-    # lsblk -dn -e 1,2,11 -o MODEL
-    
-    # disk_size=$(lsblk --nodeps --noheadings --output SIZE 2>&1 | awk '{print $1}')
-    # disk_total_size=$( calc_disk ${disk_size[@]} )
-    # disk_used_size=$( du -sh $HOME 2>&1 | awk -F " " '{print $1}' | sed "s/G//" )
-    
-    # 2020.02.28 lsblk／fdisk -l 计算硬盘空间的好处是，一些没格式化或者没挂载的硬盘也能算出来，但是还是容易出错
-    # 下边这个是各类 bench 脚本通用的，还是用这个算了，起码算错了也没什么大不了的，因为大家都错了……
-    
-    # superbench
-    # disk_size1=($( LANG=C df -hPl | grep -wvE '\-|none|tmpfs|overlay|shm|udev|devtmpfs|by-uuid|chroot|Filesystem' | awk '{print $2}' ))
-    # bench.sh
-    # disk_size1=($( LANG=C df -hPl | grep -wvE '\-|none|tmpfs|devtmpfs|by-uuid|chroot|Filesystem|udev|docker' | awk '{print $2}' ))
-
-    # 高版本 smartctl 也可以看 NVMe 的 smart，不过需要编译，放在一键脚本里还是太麻烦了
-    # 还可以用 lsblk --nodeps --noheadings --exclude 1,2,11 --output NAME,SIZE,ROTA,MODEL 2>&1
-    # nvme list | grep /dev/nvme$i | sed "s/\b \b/_/g" | awk '{print $3}' | sed "s/_/ /g"
-    # udevadm info --name=/dev/nvme${i}n1 | grep "disk/by-id/nvme-" | head -1 | sed "s|S: disk/by-id/nvme-||" | awk -F '_' '{print $1,$2}'
-    # nvme_model=$(nvme list | grep /dev/nvme$i | sed "s/\b \b/_/g" | awk '{print $3}' | sed "s/_/ /g")
-    # nvme_model="$(smartctl -a /dev/nvme${i}n1 | grep "Model Number:" | cut -d ":" -f 2 | sed -e 's/^[ \t]*//')"
+    echo -e " ASN & ISP            : ${cyan}$asn, $isp${normal}"
+    echo -e " Organization         : ${yellow}$org${normal}"
+    echo -e " Location             : ${cyan}$city, ${yellow}$country / $countryCode${normal}"
+    echo -e " Region               : ${cyan}$region${normal}"
 }
 
-deprecated_interface_check() {
-    # LotServer
-    [ -n "$(grep 'eth0:' /proc/net/dev)" ] && wangka=eth0 || wangka=`cat /proc/net/dev |awk -F: 'function trim(str){sub(/^[ \t]*/,"",str); sub(/[ \t]*$/,"",str); return str } NR>2 {print trim($1)}'  |grep -Ev '^lo|^sit|^stf|^gif|^dummy|^vmnet|^vir|^gre|^ipip|^ppp|^bond|^tun|^tap|^ip6gre|^ip6tnl|^teql|^venet|^veth|^he-ipv6|^docker' |awk 'NR==1 {print $0}'`
+superbench_ip_info2() {
+    # no jq
+    country=$(curl -s https://ipapi.co/country_name/)
+    city=$(curl -s https://ipapi.co/city/)
+    asn=$(curl -s https://ipapi.co/asn/)
+    org=$(curl -s https://ipapi.co/org/)
+    countryCode=$(curl -s https://ipapi.co/country/)
+    region=$(curl -s https://ipapi.co/region/)
 
-    # swizzin
-    wangka1=$(ip link show 2>&1 | grep -i broadcast | grep -m1 UP   | cut -d: -f 2 | cut -d@ -f 1 | sed 's/ //g')
-    wangka2=$(ip link show 2>&1 | grep -i broadcast | grep -e MASTER| cut -d: -f 2 | cut -d@ -f 1 | sed 's/ //g')
-    interface=${wangka1[0]} ; [[ -n $wangka2 ]] && interface=$wangka2
+    echo -e " ASN & ISP            : ${cyan}$asn${normal}"
+    echo -e " Organization         : ${cyan}$org${normal}"
+    echo -e " Location             : ${cyan}$city, ${GREEN}$country / $countryCode${normal}"
+    echo -e " Region               : ${cyan}$region${normal}"
+}
+
+superbench_init(){
+    if  [ ! -e './speedtest-cli/speedtest' ]; then
+        echo " Installing Speedtest-cli ..."
+        wget --no-check-certificate -qO speedtest.tgz https://cdn.jsdelivr.net/gh/oooldking/script@1.1.7/speedtest_cli/ookla-speedtest-1.0.0-$(uname -m)-linux.tgz > /dev/null 2>&1
+    fi
+    mkdir -p speedtest-cli && tar zxvf speedtest.tgz -C ./speedtest-cli/ > /dev/null 2>&1 && chmod a+rx ./speedtest-cli/speedtest
+    if  [ ! -e 'tools.py' ]; then
+        echo " Installing tools.py ..."
+        wget --no-check-certificate https://cdn.jsdelivr.net/gh/oooldking/script@1.1.7/tools.py > /dev/null 2>&1
+    fi
+    chmod a+rx tools.py
+    if  [ ! -e 'fast_com.py' ]; then
+        echo " Installing Fast.com-cli ..."
+        wget --no-check-certificate https://cdn.jsdelivr.net/gh/sanderjo/fast.com@master/fast_com.py > /dev/null 2>&1
+        wget --no-check-certificate https://cdn.jsdelivr.net/gh/sanderjo/fast.com@master/fast_com_example_usage.py > /dev/null 2>&1
+    fi
+    chmod a+rx fast_com.py
+    chmod a+rx fast_com_example_usage.py
+}
+
+superbench_ip_info4(){
+    ip_date=$(curl -4 -s http://api.ip.la/en?json)
+    echo $ip_date > ip_json.json
+    isp=$(python tools.py geoip isp)
+    as_tmp=$(python tools.py geoip as)
+    asn=$(echo $as_tmp | awk -F ' ' '{print $1}')
+    org=$(python tools.py geoip org)
+    if [ -n "$ip_date" ]; then
+        echo $ip_date
+        echo "hala"
+        country=$(python tools.py ipip country_name)
+        city=$(python tools.py ipip city)
+        countryCode=$(python tools.py ipip country_code)
+        region=$(python tools.py ipip province)
+    else
+        country=$(python tools.py geoip country)
+        city=$(python tools.py geoip city)
+        countryCode=$(python tools.py geoip countryCode)
+        region=$(python tools.py geoip regionName)  
+    fi
+    if [ -z "$city" ]; then
+        city=${region}
+    fi
+
+    echo -e " ASN & ISP            : ${cyan}$asn, $isp${normal}"
+    echo -e " Organization         : ${yellow}$org${normal}"
+    echo -e " Location             : ${cyan}$city, ${yellow}$country / $countryCode${normal}"
+    echo -e " Region               : ${cyan}$region${normal}"
+
+    rm -rf tools.py
+    rm -rf ip_json.json
+}
+
+ip_ipapi_2() {
+    mkdir -p $HOME/.abench
+    wget -t1 -T6 -qO- -4 'http://ip-api.com/json' | sed "s|,|\n|g" > $HOME/.abench/ip-api 2>&1
+    country=$( cat $HOME/.abench/ip-api | grep \"country\"      | awk -F '"' '{print $4}' ) 2>/dev/null
+    regionn=$( cat $HOME/.abench/ip-api | grep \"regionName\"   | awk -F '"' '{print $4}' ) 2>/dev/null
+    cityyyy=$( cat $HOME/.abench/ip-api | grep \"city\"         | awk -F '"' '{print $4}' ) 2>/dev/null
+    asnnnnn=$( cat $HOME/.abench/ip-api | grep \"as\"           | awk -F '"' '{print $4}' ) 2>/dev/null
+    [[ $cityyyy == Singapore ]] && unset cityyyy
 }
